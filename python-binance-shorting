@@ -1,0 +1,89 @@
+import ccxt
+import pandas as pd
+import numpy as np
+import talib
+from ta.trend import MACD
+from ta.volatility import BollingerBands
+from ta.momentum import RSIIndicator, ROCIndicator
+
+# Initialize Binance API
+binance = ccxt.binanceusdm()
+
+# Get trading pairs from Binance API
+markets = binance.load_markets()
+
+# Filter USDT trading pairs with a status of "TRADING"
+usdt_pairs = [
+    symbol for symbol in markets.keys()
+    if markets[symbol]["quote"] == "USDT" and markets[symbol]["active"]
+]
+
+
+# Define a function to get the historical klines data
+def get_historical_klines(pair):
+    klines_data = binance.fetch_ohlcv(pair, timeframe='15m', limit=200)
+    df = pd.DataFrame(klines_data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df = df.astype({'close': 'float64', 'high': 'float64', 'low': 'float64', 'open': 'float64', 'volume': 'float64'})
+    return df
+
+
+# Calculate the ROC, RSI, MACD, Bollinger Bands, and ATR
+def calculate_indicators(pair):
+    df = get_historical_klines(pair)
+
+    # ROC Indicator
+    roc = ROCIndicator(df['close'], window=12)
+    roc_values = roc.roc().dropna()
+    if len(roc_values) > 0:
+        roc_value = roc_values.iloc[-1]
+    else:
+        roc_value = 0
+
+    # RSI Indicator
+    rsi = RSIIndicator(df['close'], window=14)
+    rsi_values = rsi.rsi().dropna()
+    if len(rsi_values) > 0:
+        rsi_value = rsi_values.iloc[-1]
+    else:
+        rsi_value = 100
+
+    # MACD Indicator
+    macd = MACD(df['close'], window_slow=26, window_fast=12, window_sign=9)
+    macd_value = macd.macd().iloc[-1]
+    macd_signal = macd.macd_signal().iloc[-1]
+
+    # Bollinger Bands
+    bb = BollingerBands(df['close'], window=20, window_dev=2)
+    bb_high = bb.bollinger_hband().iloc[-1]
+    bb_low = bb.bollinger_lband().iloc[-1]
+    bb_middle = bb.bollinger_mavg().iloc[-1]
+
+    # ATR Indicator
+    atr = talib.ATR(df['high'].values, df['low'].values, df['close'].values, timeperiod=14)
+    atr_value = atr[-1]
+
+    # MACD Histogram
+    macd_histogram = macd.macd_diff().iloc[-1]
+
+    return {'symbol': pair, 'roc': roc_value, 'rsi': rsi_value, 'macd': macd_value, 'macd_signal': macd_signal,
+            'bb_high': bb_high, 'bb_low': bb_low, 'bb_middle': bb_middle, 'atr': atr_value, 'df': df,
+            'macd_histogram': macd_histogram}
+
+
+# Filter pairs with ROC < 0, RSI < 70, MACD < MACD Signal, and price below the upper Bollinger Band
+atr_threshold = 0.001  # Set your desired ATR threshold value
+filtered_pairs = []
+for pair in usdt_pairs:
+    indicators = calculate_indicators(pair)
+    if indicators['roc'] < 0 and indicators['rsi'] > 50 and indicators['macd_histogram'] < 0 \
+            and indicators['df']['close'].iloc[-1] < indicators['bb_middle'] and indicators['atr'] > atr_threshold:
+        filtered_pairs.append(indicators)
+
+# Sort the filtered pairs by ROC in descending order
+sorted_pairs = sorted(filtered_pairs, key=lambda x: x['roc'], reverse=True)
+
+# Display the top 10 best USDT trading pairs for shorting
+print("Top 10 USDT trading pairs for shorting on Binance:")
+for index, pair in enumerate(sorted_pairs[:10], start=1):
+    print(
+        f"{index}. {pair['symbol']} (ROC: {pair['roc']:.2f}, RSI: {pair['rsi']:.2f}, MACD: {pair['macd']:.5f}, MACD Signal: {pair['macd_signal']:.5f}, BB High: {pair['bb_high']:.5f}, BB Low: {pair['bb_low']:.5f}, BB Middle: {pair['bb_middle']:.5f}, ATR: {pair['atr']:.5f})")
